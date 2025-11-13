@@ -1,0 +1,10 @@
+[package]
+name = "evm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# EVM 标准 32 字节整数类型
+primitive-types = { version = "0.12", features = ["serde"] }
+# 格式化输出 16 进制
+hex = "0.4"
