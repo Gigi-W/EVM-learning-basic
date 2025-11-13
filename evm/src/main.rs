@@ -7,6 +7,10 @@ const PUSH0: u8 = 0x5F;
 const PUSH1: u8 = 0x60;
 const PUSH32: u8 = 0x7F;
 const POP: u8 = 0x50;
+const ADD: u8 = 0x01;
+const SUB: u8 = 0x03;
+const MUL: u8 = 0x02;
+const DIV: u8 = 0x04;
 
 // 是Rust的派生宏，让类型支持调试打印和默认值构造
 #[derive(Debug, Default)] 
@@ -60,11 +64,54 @@ impl EVM{
 
     fn pop(&mut self){
         if self.stack.len()==0{
-            panic!("堆栈下溢");
+            panic!("堆栈下溢，至少需要1个元素");
         }
         self.stack.pop();
     }
-    
+
+    fn add(&mut self){
+        if self.stack.len()<2{
+            panic!("堆栈下溢，至少需要两个元素");
+        }
+        let a = self.stack.pop().unwrap();
+        let b = self.stack.pop().unwrap();
+        let (result,_) = a.overflowing_add(b);
+        self.stack.push(result);
+    }
+
+    fn sub(&mut self){
+        if self.stack.len()<2{
+            panic!("堆栈下溢，至少需要两个元素");
+        }
+        let a = self.stack.pop().unwrap();
+        let b = self.stack.pop().unwrap();
+        let (result,_) = b.overflowing_sub(a);
+        self.stack.push(result);
+    }
+
+    fn mul(&mut self){
+        if self.stack.len()<2{
+            panic!("堆栈下溢，至少需要两个元素");
+        }
+        let a = self.stack.pop().unwrap();
+        let b = self.stack.pop().unwrap();
+        let (result,_) = a.overflowing_mul(b);
+        self.stack.push(result);
+    }
+
+    fn div(&mut self){
+        if self.stack.len()<2{
+            panic!("堆栈下溢，至少需要两个元素");
+        }
+        let a = self.stack.pop().unwrap();
+        let b = self.stack.pop().unwrap();
+        if a.is_zero(){
+            panic!("不允许除0操作");
+        }
+        let result = b.checked_div(a).unwrap();
+        self.stack.push(result);
+    }
+
     fn run(&mut self){
         println!("开始执行字节码，初始pc: {}", self.pc);
         while let Some(op) = self.next_instruction(){
@@ -82,6 +129,22 @@ impl EVM{
                 POP => {
                     println!("  识别POP指令");
                     self.pop();
+                }
+                ADD => {
+                    println!("  识别ADD指令");
+                    self.add();
+                }
+                SUB => {
+                    println!("  识别SUB指令");
+                    self.sub();
+                }
+                MUL => {
+                    println!("  识别MUL指令");
+                    self.mul();
+                }
+                DIV => {
+                    println!("  识别DIV指令");
+                    self.div();
                 }
                 _ => println!("不支持的opcode：{}", op),
             }
@@ -112,11 +175,10 @@ impl fmt::Display for EVM {
 }
 
 fn main() {
-    // TODO: 实现主函数逻辑
     let code: Vec<u8> = vec![
-        0x5F,
-        0x60, 0x01,
-        0x61, 0x12, 0x34
+        0x60, 0x05,
+        0x60, 0x03,
+        0x04
     ];
     let mut evm: EVM = EVM::new(code);
     evm.run();
