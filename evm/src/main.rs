@@ -2,15 +2,35 @@ use primitive_types::U256;
 use std::fmt;
 
 
-// EVM 官方opcode常量
+/// EVM 官方opcode常量
+
+// 堆栈指令
 const PUSH0: u8 = 0x5F;
 const PUSH1: u8 = 0x60;
 const PUSH32: u8 = 0x7F;
 const POP: u8 = 0x50;
+
+// 算数指令
 const ADD: u8 = 0x01;
 const SUB: u8 = 0x03;
 const MUL: u8 = 0x02;
 const DIV: u8 = 0x04;
+
+// 比较指令
+const LT: u8 = 0x10;
+const GT: u8 = 0x11;
+const EQ: u8 = 0x14;
+
+// 位级指令
+const AND: u8 = 0x16;
+const OR: u8 = 0x17;
+const NOT: u8 = 0x19;
+
+// 内存指令
+const MSTORE: u8 = 0x52;
+const MSTORE8: u8 = 0x53;
+const MLOAD: u8 = 0x51;
+const MSIZE: u8 = 0x59;
 
 // 是Rust的派生宏，让类型支持调试打印和默认值构造
 #[derive(Debug, Default)] 
@@ -18,6 +38,7 @@ struct EVM {
     code: Vec<u8>,
     pc: usize,
     stack: Vec<U256>, // 存储32字节整数
+    memory: Vec<u8>,
 }
 
 impl EVM{
@@ -26,6 +47,7 @@ impl EVM{
             code,
             pc: 0,
             stack: Vec::new(),
+            memory: Vec::new(),
         }
     }
 
@@ -49,6 +71,12 @@ impl EVM{
         Some(op)
     }
 
+    fn underflow_judge(&mut self, count: usize){
+        if self.stack.len() < count{
+            panic!("堆栈下溢，至少需要{}元素, 当前{}个元素", count, self.stack.len());
+        }
+    }
+
     fn push(&mut self, size: usize){
         if self.pc + size > self.code.len(){
             panic!(
@@ -63,46 +91,40 @@ impl EVM{
     }
 
     fn pop(&mut self){
-        if self.stack.len()==0{
-            panic!("堆栈下溢，至少需要1个元素");
-        }
+        Self::underflow_judge(self,1);
         self.stack.pop();
     }
 
+    /// 弹出栈顶两个元素，将相加结果push入栈
     fn add(&mut self){
-        if self.stack.len()<2{
-            panic!("堆栈下溢，至少需要两个元素");
-        }
+        Self::underflow_judge(self,2);
         let a = self.stack.pop().unwrap();
         let b = self.stack.pop().unwrap();
         let (result,_) = a.overflowing_add(b);
         self.stack.push(result);
     }
 
+    /// 弹出栈顶两个元素，将元素2-元素1结果 push入栈
     fn sub(&mut self){
-        if self.stack.len()<2{
-            panic!("堆栈下溢，至少需要两个元素");
-        }
+        Self::underflow_judge(self,2);
         let a = self.stack.pop().unwrap();
         let b = self.stack.pop().unwrap();
         let (result,_) = b.overflowing_sub(a);
         self.stack.push(result);
     }
 
+    // 弹出栈顶两个元素，将两元素相乘结果 push入栈
     fn mul(&mut self){
-        if self.stack.len()<2{
-            panic!("堆栈下溢，至少需要两个元素");
-        }
+        Self::underflow_judge(self,2);
         let a = self.stack.pop().unwrap();
         let b = self.stack.pop().unwrap();
         let (result,_) = a.overflowing_mul(b);
         self.stack.push(result);
     }
 
+    // 弹出栈顶两个元素，将元素2/元素1结果 push入栈
     fn div(&mut self){
-        if self.stack.len()<2{
-            panic!("堆栈下溢，至少需要两个元素");
-        }
+        Self::underflow_judge(self,2);
         let a = self.stack.pop().unwrap();
         let b = self.stack.pop().unwrap();
         if a.is_zero(){
@@ -110,6 +132,110 @@ impl EVM{
         }
         let result = b.checked_div(a).unwrap();
         self.stack.push(result);
+    }
+
+    // 弹出栈顶两个元素，元素2<元素1，push1，否则push0
+    fn lt(&mut self){
+        Self::underflow_judge(self,2);
+        let a = self.stack.pop().unwrap();
+        let b = self.stack.pop().unwrap();
+        if b < a{
+            self.stack.push(U256::one());
+        }else{
+            self.stack.push(U256::zero());
+        }
+    }
+
+    // 弹出栈顶两个元素，元素2 > 元素1，push1，否则push0
+    fn gt(&mut self){
+        Self::underflow_judge(self,2);
+        let a = self.stack.pop().unwrap();
+        let b = self.stack.pop().unwrap();
+        if b > a{
+            self.stack.push(U256::one());
+        }else{
+            self.stack.push(U256::zero());
+        }
+    }
+    // 弹出栈顶两个元素，元素2 == 元素1，push1，否则push0
+    fn eq(&mut self){
+        Self::underflow_judge(self,2);
+        let a = self.stack.pop().unwrap();
+        let b = self.stack.pop().unwrap();
+        if a==b {
+            self.stack.push(U256::one());
+        }else{
+            self.stack.push(U256::zero());
+        }
+    }
+
+    fn and(&mut self) {
+        self.underflow_judge(2);
+        let a = self.stack.pop().unwrap();
+        let b = self.stack.pop().unwrap();
+        self.stack.push(b & a);
+    }
+
+    fn or(&mut self) {
+        self.underflow_judge(2);
+        let a = self.stack.pop().unwrap();
+        let b = self.stack.pop().unwrap();
+        self.stack.push(b | a);
+    }
+
+    fn not(&mut self) {
+        self.underflow_judge(1);
+        let a = self.stack.pop().unwrap();
+        self.stack.push(!a);
+    }
+
+    // 弹出栈顶两个元素，元素1为offset，元素2为value，往memory写入32字节的value
+    fn mstore(&mut self){
+        self.underflow_judge(2);
+        let offset = self.stack.pop().unwrap().as_usize();
+        let value = self.stack.pop().unwrap();
+        let required_size = offset + 32;
+        if required_size > self.memory.len(){
+            // 扩展内存
+            self.memory.resize(required_size, 0);
+        }
+        let mut buf = [0u8; 32];
+        value.to_big_endian(&mut buf); // 把整数转为大端序字节数组
+        self.memory[offset..offset + 32].copy_from_slice(&buf);
+    }
+
+    // 弹出栈顶两个元素，元素1为offset，元素2为value，往memory写入1字节的value
+    fn mstore8(&mut self){
+        self.underflow_judge(2);
+        let offset = self.stack.pop().unwrap().as_usize();
+        let value = self.stack.pop().unwrap();
+        let required_size = offset + 1;
+        if required_size > self.memory.len(){
+            // 扩展内存
+            self.memory.resize(required_size, 0);
+        }
+        let byte_value = (value.low_u64() & 0xFF) as u8;
+        self.memory[offset] = byte_value;
+    }
+
+    // 弹出栈顶一个元素作为offset，从内存offset的位置加载32字节，再push入栈
+    fn mload(&mut self){
+        self.underflow_judge(1);
+        let offset = self.stack.pop().unwrap().as_usize();
+        let mut buf = [0u8; 32];
+        // 安全计算计算从offset开始最多能读的字节数（上限32）
+        let read_length = std::cmp::min(32, self.memory.len().saturating_sub(offset));
+        if read_length > 0 {
+            // 从内存复制数据到缓冲区（从偏移量开始，最多read_length字节）
+            buf[32 - read_length..].copy_from_slice(&self.memory[offset..offset + read_length]);
+        }
+        let value = U256::from_big_endian(&buf);
+        self.stack.push(value);
+    }
+
+    // 将内存长度push入栈
+    fn msize(&mut self){
+        self.stack.push(U256::from(self.memory.len()));
     }
 
     fn run(&mut self){
@@ -146,6 +272,46 @@ impl EVM{
                     println!("  识别DIV指令");
                     self.div();
                 }
+                LT => {
+                    println!("  识别LT指令");
+                    self.lt();
+                }
+                GT => {
+                    println!("  识别GT指令");
+                    self.gt();
+                }
+                EQ => {
+                    println!("  识别EQ指令");
+                    self.eq();
+                }
+                AND => { // 新增：与指令
+                    println!("  识别AND指令");
+                    self.and();
+                }
+                OR => {
+                    println!("  识别OR指令");
+                    self.or();
+                }
+                NOT => {
+                    println!("  识别NOT指令");
+                    self.not();
+                }
+                MSTORE => { 
+                    println!("  识别MSTORE指令");
+                    self.mstore();
+                }
+                MSTORE8 => { 
+                    println!("  识别MSTORE8指令");
+                    self.mstore8();
+                }
+                MLOAD => { 
+                    println!("  识别MLOAD指令");
+                    self.mload();
+                }
+                MSIZE => { 
+                    println!("  识别MSIZE指令");
+                    self.msize();
+                }
                 _ => println!("不支持的opcode：{}", op),
             }
             println!("  执行完毕后，pc:{}，堆栈长度：{}", self.pc, self.stack.len());
@@ -170,6 +336,12 @@ impl fmt::Display for EVM {
                 val
             )?;
         }
+
+        writeln!(f, "   内存：")?;
+        write!(f,"      ")?;
+        for (_, val) in self.memory.iter().enumerate(){
+            write!(f, "{}",val)?;
+        }
         Ok(())
     }
 }
@@ -177,8 +349,8 @@ impl fmt::Display for EVM {
 fn main() {
     let code: Vec<u8> = vec![
         0x60, 0x05,
-        0x60, 0x03,
-        0x04
+        0x60, 0x10,
+        0x52
     ];
     let mut evm: EVM = EVM::new(code);
     evm.run();
