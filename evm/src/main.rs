@@ -1,9 +1,12 @@
 use primitive_types::U256;
-use std::collections::HashMap;
+use std::collections::{HashMap,HashSet};
 use std::fmt;
 
 
 /// EVM 官方opcode常量
+
+// 停止指令
+const STOP: u8 = 0x00;
 
 // 堆栈指令
 const PUSH0: u8 = 0x5F;
@@ -37,6 +40,12 @@ const MSIZE: u8 = 0x59;
 const SSTORE: u8 = 0x55;
 const SLOAD: u8 = 0x54;
 
+// 跳转指令
+const JUMPDEST: u8 = 0x5b;
+const JUMP: u8 = 0x56;
+const JUMP1: u8 = 0x57;
+const PC: u8 = 0x58;
+
 // 是Rust的派生宏，让类型支持调试打印和默认值构造
 #[derive(Debug, Default)] 
 struct EVM {
@@ -45,16 +54,24 @@ struct EVM {
     stack: Vec<U256>, // 存储32字节整数
     memory: Vec<u8>,
     storage: HashMap<U256, U256>,
+    jump_destinations: HashSet<usize>,
 }
 
 impl EVM{
     fn new(code: Vec<u8>) -> Self{
+        let mut jump_destinations = HashSet::new();
+        for (i, byte) in code.iter().enumerate() {
+            if *byte == JUMPDEST {
+                jump_destinations.insert(i);
+            }
+        }
         Self {
             code,
             pc: 0,
             stack: Vec::new(),
             memory: Vec::new(),
             storage: HashMap::new(),
+            jump_destinations,
         }
     }
 
@@ -264,11 +281,42 @@ impl EVM{
         }
     }
 
+    fn jump(&mut self){
+        self.underflow_judge(1);
+        let destination = self.stack.pop().unwrap().as_usize();
+        if self.jump_destinations.contains(&destination){
+            self.pc = destination;
+        }else{
+            panic!("Invalid JUMPDEST target");
+        }
+    }
+
+    fn jump1(&mut self){
+        self.underflow_judge(2);
+        let destination = self.stack.pop().unwrap().as_usize();
+        let condition = self.stack.pop().unwrap();
+        if !condition.is_zero(){
+            if self.jump_destinations.contains(&destination){
+                self.pc = destination;
+            }else{
+                panic!("Invalid JUMPDEST target");
+            }
+        }
+    }
+
+    fn pcfn(&mut self) {
+        self.stack.push(U256::from(self.pc));
+    }
+
     fn run(&mut self){
         println!("开始执行字节码，初始pc: {}", self.pc);
         while let Some(op) = self.next_instruction(){
             println!("当前opcode为：0x{:02x}", op);
             match op{
+                STOP => {
+                    println!("程序终止");
+                    break;
+                }
                 PUSH1..=PUSH32 => {
                     let size = ((op-PUSH1) + 1) as usize;
                     println!("  识别PUSH{}指令，操作数长度：{}字节", size, size);
@@ -346,6 +394,20 @@ impl EVM{
                     println!("  识别SLOAD指令");
                     self.sload();
                 }
+                JUMPDEST => {
+                    println!("  识别JUMPDEST指令");
+                }
+                JUMP => {
+                    println!("  识别JUMP指令");
+                    self.jump();
+                }
+                JUMP1 => {
+                    println!("  识别JUMP1指令");
+                    self.jump1();
+                }
+                PC => {
+                    self.pcfn();
+                }
                 _ => println!("不支持的opcode：{}", op),
             }
             println!("  执行完毕后，pc:{}，堆栈长度：{}", self.pc, self.stack.len());
@@ -376,15 +438,23 @@ impl fmt::Display for EVM {
         for (_, val) in self.memory.iter().enumerate(){
             write!(f, "{}",val)?;
         }
+
+        writeln!(f, "   存储：")?;
+        write!(f,"      ")?;
+        for(key,value) in self.storage.iter(){
+            write!(f, "{}: {}", key , value)?;
+        }
         Ok(())
     }
 }
 
 fn main() {
     let code: Vec<u8> = vec![
-        0x60, 0x05,
-        0x60, 0x10,
-        0x52
+        0x60, 0x02,
+        0x60, 0x20,
+        0x00,
+        0x60, 0x20,
+        0x54
     ];
     let mut evm: EVM = EVM::new(code);
     evm.run();
