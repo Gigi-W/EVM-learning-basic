@@ -1,4 +1,5 @@
 use primitive_types::U256;
+use std::collections::HashMap;
 use std::fmt;
 
 
@@ -32,6 +33,10 @@ const MSTORE8: u8 = 0x53;
 const MLOAD: u8 = 0x51;
 const MSIZE: u8 = 0x59;
 
+// 存储指令
+const SSTORE: u8 = 0x55;
+const SLOAD: u8 = 0x54;
+
 // 是Rust的派生宏，让类型支持调试打印和默认值构造
 #[derive(Debug, Default)] 
 struct EVM {
@@ -39,6 +44,7 @@ struct EVM {
     pc: usize,
     stack: Vec<U256>, // 存储32字节整数
     memory: Vec<u8>,
+    storage: HashMap<U256, U256>,
 }
 
 impl EVM{
@@ -48,6 +54,7 @@ impl EVM{
             pc: 0,
             stack: Vec::new(),
             memory: Vec::new(),
+            storage: HashMap::new(),
         }
     }
 
@@ -238,6 +245,25 @@ impl EVM{
         self.stack.push(U256::from(self.memory.len()));
     }
 
+    // 从堆栈弹出两个元素，元素1为key，元素2为value，放入Storage
+    fn sstore(&mut self){
+        self.underflow_judge(2);
+        let key = self.stack.pop().unwrap();
+        let value = self.stack.pop().unwrap();
+        self.storage.insert(key,value);
+    }
+
+    // 从堆栈弹出一个元素作为key去查询Storage，将value push入栈
+    fn sload(&mut self){
+        self.underflow_judge(1);
+        let key = self.stack.pop().unwrap();
+        if let Some(value) = self.storage.get(&key){
+            self.stack.push(*value);
+        }else{
+            self.stack.push(U256::zero());
+        }
+    }
+
     fn run(&mut self){
         println!("开始执行字节码，初始pc: {}", self.pc);
         while let Some(op) = self.next_instruction(){
@@ -311,6 +337,14 @@ impl EVM{
                 MSIZE => { 
                     println!("  识别MSIZE指令");
                     self.msize();
+                }
+                SSTORE => {
+                    println!("  识别SSTORE指令");
+                    self.sstore();
+                }
+                SLOAD => {
+                    println!("  识别SLOAD指令");
+                    self.sload();
                 }
                 _ => println!("不支持的opcode：{}", op),
             }
