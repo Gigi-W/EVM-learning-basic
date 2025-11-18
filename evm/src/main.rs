@@ -1,3 +1,4 @@
+use ethereum_types::{Address, H256};
 use primitive_types::U256;
 use std::collections::{HashMap,HashSet};
 use std::fmt;
@@ -46,8 +47,37 @@ const JUMP: u8 = 0x56;
 const JUMP1: u8 = 0x57;
 const PC: u8 = 0x58;
 
+// 区块信息指令
+const BLOCKHASH:u8 = 0x40;
+const COINBASE:u8  = 0x41;
+const TIMESTAMP:u8  = 0x42;
+const NUMBER:u8  = 0x43;
+const PREVRANDAO:u8  = 0x44;
+const GASLIMIT:u8  = 0x45;
+const CHAINID:u8  = 0x46;
+const SELFBALANCE:u8  = 0x47;
+const BASEFEE:u8  = 0x48;
+
+// 堆栈指令2
+const DUP1:u8 = 0x80;
+const DUP16: u8 = 0x8F;
+const SWAP1:u8 = 0x90;
+const SWAP16:u8 = 0x9F;
+
 // 是Rust的派生宏，让类型支持调试打印和默认值构造
 #[derive(Debug, Default)] 
+
+struct BlockInfo {
+    blockhash: H256,
+    coinbase: Address,
+    timestamp: U256,
+    number: U256,
+    prevrandao: H256,
+    gaslimit: U256,
+    chainid: U256,
+    selfbalance: U256,
+    basefee: U256,
+}
 struct EVM {
     code: Vec<u8>,
     pc: usize,
@@ -55,6 +85,7 @@ struct EVM {
     memory: Vec<u8>,
     storage: HashMap<U256, U256>,
     jump_destinations: HashSet<usize>,
+    current_block: BlockInfo,
 }
 
 impl EVM{
@@ -65,6 +96,22 @@ impl EVM{
                 jump_destinations.insert(i);
             }
         }
+
+        let blockhash = H256::from_slice(&hex::decode("7527123fc877fe753b3122dc592671b4902ebf2b325dd2c7224a43c0cbeee3ca").unwrap());
+        let coinbase = Address::from_slice(&hex::decode("388C818CA8B9251b393131C08a736A67ccB19297").unwrap());
+        let prevrandao = H256::from_slice(&hex::decode("ce124dee50136f3f93f19667fb4198c6b94eecbacfa300469e5280012757be94").unwrap());
+        let current_block = BlockInfo {
+            blockhash,
+            coinbase,
+            timestamp: U256::from(1625900000),
+            number: U256::from(17871709),
+            prevrandao,
+            gaslimit: U256::from(30),
+            chainid: U256::from(1),
+            selfbalance: U256::from(100),
+            basefee: U256::from(30),
+        };
+
         Self {
             code,
             pc: 0,
@@ -72,6 +119,7 @@ impl EVM{
             memory: Vec::new(),
             storage: HashMap::new(),
             jump_destinations,
+            current_block,
         }
     }
 
@@ -308,6 +356,70 @@ impl EVM{
         self.stack.push(U256::from(self.pc));
     }
 
+    // 查询特定区块的hash
+    fn blockhash(&mut self){
+        self.underflow_judge(1);
+        let number =  self.stack.pop().unwrap();
+        if number == self.current_block.number{
+            self.stack.push(U256::from_big_endian(self.current_block.blockhash.as_bytes()));
+        }else{
+            self.stack.push(U256::zero());
+        }
+
+    }
+
+    fn coinbase(&mut self){
+        self.stack.push(U256::from_big_endian(self.current_block.coinbase.as_bytes()));
+    }
+
+    fn timestamp(&mut self){
+        self.stack.push(self.current_block.timestamp);
+    }
+
+    // 将当前区块高度压入堆栈
+    fn number(&mut self){
+        self.stack.push(self.current_block.number);
+    }
+
+    // 获取上一个区块的随机数输出
+    fn prevrandao(&mut self){
+        self.stack.push(U256::from_big_endian(self.current_block.prevrandao.as_bytes()));
+    }
+
+    fn gaslimit(&mut self){
+        self.stack.push(self.current_block.gaslimit);
+    }
+
+    fn chainid(&mut self){
+        self.stack.push(self.current_block.chainid);
+    }
+
+    fn selfbalance(&mut self){
+        self.stack.push(self.current_block.selfbalance);
+    }
+
+    fn basefee(&mut self){
+        self.stack.push(self.current_block.basefee);
+    }
+
+    fn dup(&mut self, position: usize){
+        self.underflow_judge(position);
+        if position<self.stack.len(){
+            let value = self.stack[position];
+            self.stack.push(value);
+        }else{
+            panic!("Stack index out of bounds in DUP operation");
+        }
+    }
+
+    fn swap(&mut self, position: usize){
+        self.underflow_judge(position);
+        let stack_len = self.stack.len();
+        let idx1 = stack_len.checked_sub(1).unwrap_or(0);
+        let idx2 = stack_len.checked_sub(position + 1).unwrap_or(0);
+        self.stack.swap(idx1, idx2);
+    }
+
     fn run(&mut self){
         println!("开始执行字节码，初始pc: {}", self.pc);
         while let Some(op) = self.next_instruction(){
@@ -408,6 +520,50 @@ impl EVM{
                 PC => {
                     self.pcfn();
                 }
+                BLOCKHASH => {
+                    println!("  识别BLOCKHASH指令");
+                    self.blockhash();
+                }
+                COINBASE => {
+                    println!("  识别COINBASE指令");
+                    self.coinbase();
+                }
+                TIMESTAMP => {
+                    println!("  识别TIMESTAMP指令");
+                    self.timestamp();
+                }
+                NUMBER => {
+                    println!("  识别NUMBER指令");
+                    self.number();
+                }
+                PREVRANDAO => {
+                    println!("  识别PREVRANDAO指令");
+                    self.prevrandao();
+                }
+                GASLIMIT => {
+                    println!("  识别GASLIMIT指令");
+                    self.gaslimit();
+                }
+                CHAINID => {
+                    println!("  识别CHAINID指令");
+                    self.chainid();
+                }
+                SELFBALANCE => {
+                    println!("  识别SELFBALANCE指令");
+                    self.selfbalance();
+                }
+                BASEFEE => {
+                    println!("  识别BASEFEE指令");
+                    self.basefee();
+                }
+                DUP1..=DUP16 => {
+                    let position = (op - DUP1 + 1) as usize;
+                    self.dup(position);
+                }
+                SWAP1..=SWAP16 => {
+                    let position = (op - SWAP1 + 1) as usize;
+                    self.swap(position);
+                }
                 _ => println!("不支持的opcode：{}", op),
             }
             println!("  执行完毕后，pc:{}，堆栈长度：{}", self.pc, self.stack.len());
@@ -450,11 +606,9 @@ impl fmt::Display for EVM {
 
 fn main() {
     let code: Vec<u8> = vec![
+        0x60, 0x01,
         0x60, 0x02,
-        0x60, 0x20,
-        0x00,
-        0x60, 0x20,
-        0x54
+        0x91,
     ];
     let mut evm: EVM = EVM::new(code);
     evm.run();
