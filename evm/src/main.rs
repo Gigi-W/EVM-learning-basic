@@ -80,6 +80,11 @@ const EXTCODEHASH:u8 = 0x3F;
 const LOG0: u8 = 0xA0;
 const LOG4: u8 = 0xA4;
 
+// 返回数据
+const RETURN: u8 = 0xF3;
+const RETURNDATASIZE: u8 = 0x3D;
+const RETURNDATACOPY: u8 = 0x3E;
+
 // 是Rust的派生宏，让类型支持调试打印和默认值构造
 #[derive(Debug, Default)] 
 struct BlockInfo {
@@ -116,6 +121,7 @@ struct EVM {
     current_block: BlockInfo,
     account_db: HashMap<Address, AccountInfo>,
     logs: Vec<Log>,
+    return_data: Vec<u8>,
 }
 
 impl EVM{
@@ -164,6 +170,7 @@ impl EVM{
             current_block,
             account_db,
             logs: Vec::new(),
+            return_data: Vec::new(),
         }
     }
 
@@ -597,6 +604,38 @@ impl EVM{
         self.logs.push(log_entry);
     }
 
+    fn returnfn(&mut self){
+        self.underflow_judge(2);
+        let memory_offset = self.pop().as_usize();
+        let length = self.pop().as_usize();
+        let required_size = memory_offset.checked_add(length).expect("memory size overflow");
+        if required_size>self.memory.len(){
+            panic!("data size overflow");
+        }
+        let data = &self.memory[memory_offset..required_size];
+        self.return_data = data.to_vec();
+    }
+
+    fn return_data_size(&mut self){
+        self.stack.push(U256::from(self.return_data.len()));
+    }
+
+    fn return_data_copy(&mut self){
+        self.underflow_judge(3);
+        let memory_offset = self.pop().as_usize();
+        let data_offset = self.pop().as_usize();
+        let length = self.pop().as_usize();
+        let required_size = memory_offset.checked_add(length).expect("memory size overflow");
+        if length>self.return_data.len(){
+            panic!("data size overflow");
+        }
+        if required_size>self.memory.len(){
+            self.memory.resize(length,0);
+        }
+        let data = &self.return_data[data_offset..required_size];
+        self.memory.copy_from_slice(data);
+    }
+
     fn run(&mut self){
         println!("开始执行字节码，初始pc: {}", self.pc);
         while let Some(op) = self.next_instruction(){
@@ -760,6 +799,15 @@ impl EVM{
                     let num_topics = (op - LOG0) as usize;
                     self.logn(num_topics);
                 }
+                RETURN =>{
+                    self.returnfn();
+                }
+                RETURNDATASIZE =>{
+                    self.return_data_size();
+                }
+                RETURNDATACOPY =>{
+                    self.return_data_copy();
+                }
                 _ => println!("不支持的opcode：{}", op),
             }
             println!("  执行完毕后，pc:{}，堆栈长度：{}", self.pc, self.stack.len());
@@ -811,19 +859,22 @@ impl fmt::Display for EVM {
             )?;
         }
 
+        writeln!(f, "   返回数据returnData：")?;
+        write!(f,"      ")?;
+        for (_, val) in self.return_data.iter().enumerate(){
+            write!(f, "{:02x}",val)?;
+        }
+
         Ok(())
     }
 }
 
 fn main() {
     let code: Vec<u8> = vec![
-        0x60,0xaa,
-        0x60,0x00,
-        0x52,
-        0x60,0x11,
         0x60,0x01,
-        0x60,0x1f,
-        0xA1,
+        0x60,0x00,
+        0x60,0x00,
+        0x3E
     ];
     let mut evm: EVM = EVM::new(code);
     evm.run();
