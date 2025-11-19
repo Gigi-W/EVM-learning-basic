@@ -76,9 +76,12 @@ const EXTCODESIZE:u8 = 0x3B;
 const EXTCODECOPY:u8 = 0x3C;
 const EXTCODEHASH:u8 = 0x3F;
 
+// 日志指令
+const LOG0: u8 = 0xA0;
+const LOG4: u8 = 0xA4;
+
 // 是Rust的派生宏，让类型支持调试打印和默认值构造
 #[derive(Debug, Default)] 
-
 struct BlockInfo {
     blockhash: H256,
     coinbase: Address,
@@ -97,6 +100,12 @@ struct AccountInfo {
     storage: HashMap<U256, U256>,
     code: Vec<u8>,
 }
+
+struct Log{
+    address: Address,
+    data: Vec<u8>,
+    topics: Vec<H256>,
+}
 struct EVM {
     code: Vec<u8>,
     pc: usize,
@@ -106,6 +115,7 @@ struct EVM {
     jump_destinations: HashSet<usize>,
     current_block: BlockInfo,
     account_db: HashMap<Address, AccountInfo>,
+    logs: Vec<Log>,
 }
 
 impl EVM{
@@ -153,6 +163,7 @@ impl EVM{
             jump_destinations,
             current_block,
             account_db,
+            logs: Vec::new(),
         }
     }
 
@@ -565,6 +576,27 @@ impl EVM{
         };
     }
 
+    fn logn(&mut self, num_topics:usize){
+        self.underflow_judge(num_topics + 2);
+        let memory_offset = self.pop().as_usize();
+        let length = self.pop().as_usize();
+        let mut topics = Vec::with_capacity(num_topics);
+        for _ in 0..num_topics{
+            let topic = self.pop();
+            let mut buf = [0u8;32];
+            topic.to_big_endian(&mut buf);
+            topics.push(H256::from(buf));
+        }
+        let memory_required_size = memory_offset.checked_add(length).expect("memory size overflow");
+        let data = &self.memory[memory_offset..memory_required_size];
+        let log_entry=Log{
+            address: self.current_block.coinbase,
+            data: data.to_vec(),
+            topics,
+        };
+        self.logs.push(log_entry);
+    }
+
     fn run(&mut self){
         println!("开始执行字节码，初始pc: {}", self.pc);
         while let Some(op) = self.next_instruction(){
@@ -724,6 +756,10 @@ impl EVM{
                 EXTCODEHASH => {
                     self.extcodehash();
                 }
+                LOG0..LOG4 =>{
+                    let num_topics = (op - LOG0) as usize;
+                    self.logn(num_topics);
+                }
                 _ => println!("不支持的opcode：{}", op),
             }
             println!("  执行完毕后，pc:{}，堆栈长度：{}", self.pc, self.stack.len());
@@ -749,26 +785,45 @@ impl fmt::Display for EVM {
             )?;
         }
 
-        writeln!(f, "   内存：")?;
+        writeln!(f, "   内存Memory：")?;
         write!(f,"      ")?;
         for (_, val) in self.memory.iter().enumerate(){
             write!(f, "{:02x}",val)?;
         }
 
-        writeln!(f, "   存储：")?;
+        writeln!(f,"")?;
+        writeln!(f, "   存储Storage：")?;
         write!(f,"      ")?;
         for(key,value) in self.storage.iter(){
             write!(f, "{}: {}", key , value)?;
         }
+
+        writeln!(f,"")?;
+        writeln!(f, "   日志Logs:")?;
+        for (i, log) in self.logs.iter().enumerate() {
+            writeln!(
+                f,
+                "      Log {}: address={}, topics={:?}, data=0x{}",
+                i,
+                log.address,
+                log.topics,
+                hex::encode(&log.data)
+            )?;
+        }
+
         Ok(())
     }
 }
 
 fn main() {
     let code: Vec<u8> = vec![
-        0x5F,
-        0x5F,
-        0x20,
+        0x60,0xaa,
+        0x60,0x00,
+        0x52,
+        0x60,0x11,
+        0x60,0x01,
+        0x60,0x1f,
+        0xA1,
     ];
     let mut evm: EVM = EVM::new(code);
     evm.run();
