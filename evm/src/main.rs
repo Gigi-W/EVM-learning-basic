@@ -1,7 +1,10 @@
 use ethereum_types::{Address, H256};
 use primitive_types::U256;
+use sha3::{Digest, Keccak256};
 use std::collections::{HashMap,HashSet};
 use std::fmt;
+use std::str::FromStr;
+use hex;
 
 
 /// EVM 官方opcode常量
@@ -44,7 +47,7 @@ const SLOAD: u8 = 0x54;
 // 跳转指令
 const JUMPDEST: u8 = 0x5b;
 const JUMP: u8 = 0x56;
-const JUMP1: u8 = 0x57;
+const JUMPI: u8 = 0x57;
 const PC: u8 = 0x58;
 
 // 区块信息指令
@@ -64,6 +67,15 @@ const DUP16: u8 = 0x8F;
 const SWAP1:u8 = 0x90;
 const SWAP16:u8 = 0x9F;
 
+// SHA3指令
+const SHA3: u8 = 0x20;
+
+// 账户指令
+const BALANCE:u8 = 0x31;
+const EXTCODESIZE:u8 = 0x3B;
+const EXTCODECOPY:u8 = 0x3C;
+const EXTCODEHASH:u8 = 0x3F;
+
 // 是Rust的派生宏，让类型支持调试打印和默认值构造
 #[derive(Debug, Default)] 
 
@@ -78,6 +90,13 @@ struct BlockInfo {
     selfbalance: U256,
     basefee: U256,
 }
+
+struct AccountInfo {
+    balance: U256,
+    nonce: U256,
+    storage: HashMap<U256, U256>,
+    code: Vec<u8>,
+}
 struct EVM {
     code: Vec<u8>,
     pc: usize,
@@ -86,6 +105,7 @@ struct EVM {
     storage: HashMap<U256, U256>,
     jump_destinations: HashSet<usize>,
     current_block: BlockInfo,
+    account_db: HashMap<Address, AccountInfo>,
 }
 
 impl EVM{
@@ -97,6 +117,7 @@ impl EVM{
             }
         }
 
+        // 处理区块信息
         let blockhash = H256::from_slice(&hex::decode("7527123fc877fe753b3122dc592671b4902ebf2b325dd2c7224a43c0cbeee3ca").unwrap());
         let coinbase = Address::from_slice(&hex::decode("388C818CA8B9251b393131C08a736A67ccB19297").unwrap());
         let prevrandao = H256::from_slice(&hex::decode("ce124dee50136f3f93f19667fb4198c6b94eecbacfa300469e5280012757be94").unwrap());
@@ -112,6 +133,17 @@ impl EVM{
             basefee: U256::from(30),
         };
 
+        // 处理账户信息
+        let mut account_db: HashMap<Address, AccountInfo> = HashMap::new();
+        let address = Address::from_str("0x9bbfed6889322e016e0a02ee459d306fc19545d8").unwrap();
+        let account_db_info = AccountInfo{
+            balance: U256::from(100),
+            nonce: U256::from(1),
+            storage: HashMap::new(),
+            code: vec![0x60,0x00,0x60,0x00],
+        };
+        account_db.insert(address, account_db_info);
+
         Self {
             code,
             pc: 0,
@@ -120,18 +152,23 @@ impl EVM{
             storage: HashMap::new(),
             jump_destinations,
             current_block,
+            account_db,
         }
     }
 
     /// 辅助函数：将大端序字节切片转为 EVM 标准 U256（32 字节整数）
     /// EVM 要求整数是 32 字节大端序，不足 32 字节时前面补 0
     fn bytes_to_u256(data: &[u8])-> U256 {
-        let mut buf = [0u8; 32];
-        let offset = 32 - data.len(); // 计算需要补几个0
-        if offset < 32{
-            buf[offset..].copy_from_slice(data);
-        }
-        U256::from_big_endian(&buf)
+        if data.len()>=32{
+            U256::from_big_endian(&data[data.len() - 32..])
+        }else{
+            let mut buf = [0u8; 32];
+            let offset = 32 - data.len(); // 计算需要补几个0
+            if offset < 32{
+                buf[offset..].copy_from_slice(data);
+            }
+            U256::from_big_endian(&buf)
+        } 
     }
 
     fn next_instruction(&mut self) -> Option<u8>{
@@ -162,43 +199,43 @@ impl EVM{
         self.pc += size;
     }
 
-    fn pop(&mut self){
-        Self::underflow_judge(self,1);
-        self.stack.pop();
+    fn pop(&mut self)->U256{
+        self.underflow_judge(1);
+        self.stack.pop().unwrap()
     }
 
     /// 弹出栈顶两个元素，将相加结果push入栈
     fn add(&mut self){
-        Self::underflow_judge(self,2);
-        let a = self.stack.pop().unwrap();
-        let b = self.stack.pop().unwrap();
+        self.underflow_judge(2);
+        let a = self.pop();
+        let b = self.pop();
         let (result,_) = a.overflowing_add(b);
         self.stack.push(result);
     }
 
     /// 弹出栈顶两个元素，将元素2-元素1结果 push入栈
     fn sub(&mut self){
-        Self::underflow_judge(self,2);
-        let a = self.stack.pop().unwrap();
-        let b = self.stack.pop().unwrap();
+        self.underflow_judge(2);
+        let a = self.pop();
+        let b = self.pop();
         let (result,_) = b.overflowing_sub(a);
         self.stack.push(result);
     }
 
     // 弹出栈顶两个元素，将两元素相乘结果 push入栈
     fn mul(&mut self){
-        Self::underflow_judge(self,2);
-        let a = self.stack.pop().unwrap();
-        let b = self.stack.pop().unwrap();
+        self.underflow_judge(2);
+        let a = self.pop();
+        let b = self.pop();
         let (result,_) = a.overflowing_mul(b);
         self.stack.push(result);
     }
 
     // 弹出栈顶两个元素，将元素2/元素1结果 push入栈
     fn div(&mut self){
-        Self::underflow_judge(self,2);
-        let a = self.stack.pop().unwrap();
-        let b = self.stack.pop().unwrap();
+        self.underflow_judge(2);
+        let a = self.pop();
+        let b = self.pop();
         if a.is_zero(){
             panic!("不允许除0操作");
         }
@@ -208,9 +245,9 @@ impl EVM{
 
     // 弹出栈顶两个元素，元素2<元素1，push1，否则push0
     fn lt(&mut self){
-        Self::underflow_judge(self,2);
-        let a = self.stack.pop().unwrap();
-        let b = self.stack.pop().unwrap();
+        self.underflow_judge(2);
+        let a = self.pop();
+        let b = self.pop();
         if b < a{
             self.stack.push(U256::one());
         }else{
@@ -220,9 +257,9 @@ impl EVM{
 
     // 弹出栈顶两个元素，元素2 > 元素1，push1，否则push0
     fn gt(&mut self){
-        Self::underflow_judge(self,2);
-        let a = self.stack.pop().unwrap();
-        let b = self.stack.pop().unwrap();
+        self.underflow_judge(2);
+        let a = self.pop();
+        let b = self.pop();
         if b > a{
             self.stack.push(U256::one());
         }else{
@@ -231,9 +268,9 @@ impl EVM{
     }
     // 弹出栈顶两个元素，元素2 == 元素1，push1，否则push0
     fn eq(&mut self){
-        Self::underflow_judge(self,2);
-        let a = self.stack.pop().unwrap();
-        let b = self.stack.pop().unwrap();
+        self.underflow_judge(2);
+        let a = self.pop();
+        let b = self.pop();
         if a==b {
             self.stack.push(U256::one());
         }else{
@@ -243,45 +280,45 @@ impl EVM{
 
     fn and(&mut self) {
         self.underflow_judge(2);
-        let a = self.stack.pop().unwrap();
-        let b = self.stack.pop().unwrap();
+        let a = self.pop();
+        let b = self.pop();
         self.stack.push(b & a);
     }
 
     fn or(&mut self) {
         self.underflow_judge(2);
-        let a = self.stack.pop().unwrap();
-        let b = self.stack.pop().unwrap();
+        let a = self.pop();
+        let b = self.pop();
         self.stack.push(b | a);
     }
 
     fn not(&mut self) {
         self.underflow_judge(1);
-        let a = self.stack.pop().unwrap();
+        let a = self.pop();
         self.stack.push(!a);
     }
 
     // 弹出栈顶两个元素，元素1为offset，元素2为value，往memory写入32字节的value
     fn mstore(&mut self){
         self.underflow_judge(2);
-        let offset = self.stack.pop().unwrap().as_usize();
-        let value = self.stack.pop().unwrap();
-        let required_size = offset + 32;
+        let offset = self.pop().as_usize();
+        let value = self.pop();
+        let required_size = offset.checked_add(32).expect("memory size overflow");
         if required_size > self.memory.len(){
             // 扩展内存
             self.memory.resize(required_size, 0);
         }
         let mut buf = [0u8; 32];
         value.to_big_endian(&mut buf); // 把整数转为大端序字节数组
-        self.memory[offset..offset + 32].copy_from_slice(&buf);
+        self.memory[offset..required_size].copy_from_slice(&buf);
     }
 
     // 弹出栈顶两个元素，元素1为offset，元素2为value，往memory写入1字节的value
     fn mstore8(&mut self){
         self.underflow_judge(2);
-        let offset = self.stack.pop().unwrap().as_usize();
-        let value = self.stack.pop().unwrap();
-        let required_size = offset + 1;
+        let offset = self.pop().as_usize();
+        let value = self.pop();
+        let required_size = offset.checked_add(1).expect("memory size overflow");
         if required_size > self.memory.len(){
             // 扩展内存
             self.memory.resize(required_size, 0);
@@ -293,13 +330,13 @@ impl EVM{
     // 弹出栈顶一个元素作为offset，从内存offset的位置加载32字节，再push入栈
     fn mload(&mut self){
         self.underflow_judge(1);
-        let offset = self.stack.pop().unwrap().as_usize();
+        let offset = self.pop().as_usize();
         let mut buf = [0u8; 32];
-        // 安全计算计算从offset开始最多能读的字节数（上限32）
+        // 安全计算从offset开始最多能读的字节数（上限32）
         let read_length = std::cmp::min(32, self.memory.len().saturating_sub(offset));
         if read_length > 0 {
             // 从内存复制数据到缓冲区（从偏移量开始，最多read_length字节）
-            buf[32 - read_length..].copy_from_slice(&self.memory[offset..offset + read_length]);
+            buf[32 - read_length..].copy_from_slice(&self.memory[offset..offset.checked_add(read_length).expect("memory size overflow")]);
         }
         let value = U256::from_big_endian(&buf);
         self.stack.push(value);
@@ -313,15 +350,15 @@ impl EVM{
     // 从堆栈弹出两个元素，元素1为key，元素2为value，放入Storage
     fn sstore(&mut self){
         self.underflow_judge(2);
-        let key = self.stack.pop().unwrap();
-        let value = self.stack.pop().unwrap();
+        let key = self.pop();
+        let value = self.pop();
         self.storage.insert(key,value);
     }
 
     // 从堆栈弹出一个元素作为key去查询Storage，将value push入栈
     fn sload(&mut self){
         self.underflow_judge(1);
-        let key = self.stack.pop().unwrap();
+        let key = self.pop();
         if let Some(value) = self.storage.get(&key){
             self.stack.push(*value);
         }else{
@@ -331,7 +368,7 @@ impl EVM{
 
     fn jump(&mut self){
         self.underflow_judge(1);
-        let destination = self.stack.pop().unwrap().as_usize();
+        let destination = self.pop().as_usize();
         if self.jump_destinations.contains(&destination){
             self.pc = destination;
         }else{
@@ -339,10 +376,10 @@ impl EVM{
         }
     }
 
-    fn jump1(&mut self){
+    fn jump_i(&mut self){
         self.underflow_judge(2);
-        let destination = self.stack.pop().unwrap().as_usize();
-        let condition = self.stack.pop().unwrap();
+        let destination = self.pop().as_usize();
+        let condition = self.pop();
         if !condition.is_zero(){
             if self.jump_destinations.contains(&destination){
                 self.pc = destination;
@@ -359,7 +396,7 @@ impl EVM{
     // 查询特定区块的hash
     fn blockhash(&mut self){
         self.underflow_judge(1);
-        let number =  self.stack.pop().unwrap();
+        let number =  self.pop();
         if number == self.current_block.number{
             self.stack.push(U256::from_big_endian(self.current_block.blockhash.as_bytes()));
         }else{
@@ -403,21 +440,129 @@ impl EVM{
     }
 
     fn dup(&mut self, position: usize){
-        self.underflow_judge(position);
-        if position<self.stack.len(){
-            let value = self.stack[position];
-            self.stack.push(value);
-        }else{
-            panic!("Stack index out of bounds in DUP operation");
+        if position == 0 {
+            panic!("DUP position must be >= 1");
         }
+    
+        self.underflow_judge(position);
+        let value = self.stack[self.stack.len() - position];
+        self.stack.push(value);
     }
 
     fn swap(&mut self, position: usize){
-        self.underflow_judge(position);
+        self.underflow_judge(position+1);
         let stack_len = self.stack.len();
-        let idx1 = stack_len.checked_sub(1).unwrap_or(0);
-        let idx2 = stack_len.checked_sub(position + 1).unwrap_or(0);
+        let idx1 = stack_len - 1;
+        let idx2 = stack_len - (position + 1);
         self.stack.swap(idx1, idx2);
+    }
+
+    fn sha3(&mut self){
+        self.underflow_judge(2);
+        let memory_offset = self.pop().as_usize();
+        let size = self.pop().as_usize();
+        let required_size =  memory_offset.checked_add(size).expect("memory size overflow");
+        if required_size>self.memory.len(){
+            self.memory.resize(required_size,0);
+        }
+        let data = &self.memory[memory_offset..required_size];
+        let mut hasher = Keccak256::new();
+        hasher.update(data);
+        let result = hasher.finalize();
+        let hash_value = U256::from_big_endian(&result);
+        self.stack.push(hash_value);
+    }
+
+    fn balance(&mut self){
+        self.underflow_judge(1);
+        let addr_int = self.pop();
+        // 将整数转为32字节大端序
+        let mut buf = [0u8; 32];
+        addr_int.to_big_endian(&mut buf);
+        // 截取后20字节
+        let addr_bytes = &buf[12..32];
+        // 转为地址类型
+        let addr = Address::from_slice(addr_bytes);
+        if  let Some(account) = self.account_db.get(&addr){
+            self.stack.push(account.balance);
+        }else{
+            self.stack.push(U256::zero());
+        }
+    }
+
+    fn extcodesize(&mut self){
+        self.underflow_judge(1);
+        let addr_int = self.pop();
+        // 将整数转为32字节大端序
+        let mut buf = [0u8; 32];
+        addr_int.to_big_endian(&mut buf);
+        // 截取后20字节
+        let addr_bytes = &buf[12..32];
+        // 转为地址类型
+        let addr = Address::from_slice(addr_bytes);
+        if  let Some(account) = self.account_db.get(&addr){
+            self.stack.push(U256::from(account.code.len() as u64));
+        }else{
+            self.stack.push(U256::zero());
+        }
+    }
+
+    fn extcodecopy(&mut self){
+        self.underflow_judge(4);
+
+        let addr_int = self.pop();
+        let mut buf = [0u8; 32];
+        addr_int.to_big_endian(&mut buf);
+        let addr_bytes = &buf[12..32];
+        let addr = Address::from_slice(addr_bytes);
+
+        let mem_offset = self.pop().as_usize();
+        let code_offset = self.pop().as_usize();
+        let length = self.pop().as_usize();
+
+        if length==0{
+            return;
+        }
+        let required_size = mem_offset.checked_add(length).expect("memory size overflow");
+        if required_size > self.memory.len(){
+            self.memory.resize(required_size,0);
+        }
+        
+        let code_slice: &[u8] = if let Some(account)=self.account_db.get(&addr){
+            &account.code
+        }else{
+            &[]
+        };
+
+        if code_offset>=code_slice.len(){
+            return;
+        }
+
+        let available_len = code_slice.len() - code_offset;
+        let to_copy_len = std::cmp::min(available_len, length);
+
+        let src = &code_slice[code_offset..code_offset.checked_add(to_copy_len).expect("code size overflow")];
+        self.memory[mem_offset..mem_offset + to_copy_len].copy_from_slice(src);
+    }
+
+    fn extcodehash(&mut self){
+        self.underflow_judge(1);
+        let addr_int = self.pop();
+        let mut buf = [0u8; 32];
+        addr_int.to_big_endian(&mut buf);
+        let addr_bytes = &buf[12..32];
+        let addr = Address::from_slice(addr_bytes);
+
+        if let Some(account)=self.account_db.get(&addr){
+            let code: &[u8] = &account.code;
+            let mut hasher = Keccak256::new();
+            hasher.update(code);
+            let result = hasher.finalize();
+            let result_value = U256::from_big_endian(&result);
+            self.stack.push(result_value);
+        }else{
+            self.stack.push(U256::zero());
+        };
     }
 
     fn run(&mut self){
@@ -513,9 +658,9 @@ impl EVM{
                     println!("  识别JUMP指令");
                     self.jump();
                 }
-                JUMP1 => {
-                    println!("  识别JUMP1指令");
-                    self.jump1();
+                JUMPI => {
+                    println!("  识别JUMPI指令");
+                    self.jump_i();
                 }
                 PC => {
                     self.pcfn();
@@ -564,6 +709,21 @@ impl EVM{
                     let position = (op - SWAP1 + 1) as usize;
                     self.swap(position);
                 }
+                SHA3 =>{
+                    self.sha3();
+                }
+                BALANCE =>{
+                    self.balance();
+                }
+                EXTCODESIZE => {
+                    self.extcodesize();
+                }
+                EXTCODECOPY => {
+                    self.extcodecopy();
+                }
+                EXTCODEHASH => {
+                    self.extcodehash();
+                }
                 _ => println!("不支持的opcode：{}", op),
             }
             println!("  执行完毕后，pc:{}，堆栈长度：{}", self.pc, self.stack.len());
@@ -592,7 +752,7 @@ impl fmt::Display for EVM {
         writeln!(f, "   内存：")?;
         write!(f,"      ")?;
         for (_, val) in self.memory.iter().enumerate(){
-            write!(f, "{}",val)?;
+            write!(f, "{:02x}",val)?;
         }
 
         writeln!(f, "   存储：")?;
@@ -606,9 +766,9 @@ impl fmt::Display for EVM {
 
 fn main() {
     let code: Vec<u8> = vec![
-        0x60, 0x01,
-        0x60, 0x02,
-        0x91,
+        0x5F,
+        0x5F,
+        0x20,
     ];
     let mut evm: EVM = EVM::new(code);
     evm.run();
