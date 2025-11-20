@@ -85,6 +85,10 @@ const RETURN: u8 = 0xF3;
 const RETURNDATASIZE: u8 = 0x3D;
 const RETURNDATACOPY: u8 = 0x3E;
 
+// 回滚指令
+const REVERT: u8 = 0xFD;
+const INVALID: u8 = 0xFE;
+
 // 是Rust的派生宏，让类型支持调试打印和默认值构造
 #[derive(Debug, Default)] 
 struct BlockInfo {
@@ -122,6 +126,7 @@ struct EVM {
     account_db: HashMap<Address, AccountInfo>,
     logs: Vec<Log>,
     return_data: Vec<u8>,
+    success: bool,
 }
 
 impl EVM{
@@ -171,6 +176,7 @@ impl EVM{
             account_db,
             logs: Vec::new(),
             return_data: Vec::new(),
+            success: true,
         }
     }
 
@@ -636,9 +642,26 @@ impl EVM{
         self.memory.copy_from_slice(data);
     }
 
+    fn revert(&mut self){
+        self.underflow_judge(2);
+        let memory_offset = self.pop().as_usize();
+        let length = self.pop().as_usize();
+        let required_size = memory_offset.checked_add(length).expect("memory size overflow");
+        if required_size>self.memory.len(){
+            self.memory.resize(length,0);
+        }
+        let data = &self.memory[memory_offset..required_size];
+        self.return_data = data.to_vec();
+        self.success = false;
+    }
+
+    fn invalid(&mut self){
+        self.success = false;
+    }
+
     fn run(&mut self){
         println!("开始执行字节码，初始pc: {}", self.pc);
-        while let Some(op) = self.next_instruction(){
+        while let Some(op) = self.next_instruction() && self.success{
             println!("当前opcode为：0x{:02x}", op);
             match op{
                 STOP => {
@@ -808,6 +831,12 @@ impl EVM{
                 RETURNDATACOPY =>{
                     self.return_data_copy();
                 }
+                REVERT => {
+                    self.revert();
+                }
+                INVALID =>{
+                    self.invalid();
+                }
                 _ => println!("不支持的opcode：{}", op),
             }
             println!("  执行完毕后，pc:{}，堆栈长度：{}", self.pc, self.stack.len());
@@ -871,10 +900,11 @@ impl fmt::Display for EVM {
 
 fn main() {
     let code: Vec<u8> = vec![
+        0x60,0x0a,
         0x60,0x01,
         0x60,0x00,
-        0x60,0x00,
-        0x3E
+        0xFE,
+        0x52
     ];
     let mut evm: EVM = EVM::new(code);
     evm.run();
